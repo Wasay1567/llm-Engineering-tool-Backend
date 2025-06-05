@@ -34,5 +34,9 @@ class Documents(Base):
     chunk_text = Column(Text)
     api_id = Column(Integer, ForeignKey('api_list.id'), unique=False)
     created_at = Column(DateTime, nullable=False, default=datetime.now(timezone.utc))
+    hits = Column(Integer, default=0)
+    filename = Column(Text, nullable=False)
+    size = Column(int)
+    last_used = Column(DateTime, default=None)
 
     api = relationship("APIList", back_populates="documents")

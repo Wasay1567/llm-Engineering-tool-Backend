@@ -5,6 +5,7 @@ from pydantic import BaseModel, EmailStr, constr
 from sqlalchemy.orm import Session
 from models.__init__ import get_db
 from models.user import User
+from models.documents import Documents
 from models.api_list import APIList, UNLIMITED_TOKENS
 from models.documents import Documents
 from routers.auth import get_current_user
@@ -49,6 +50,14 @@ class UpdateTokenLimitRequest(BaseModel):
 
 class AddDocumentRequest(BaseModel):
     chunk_text: str
+
+class GetDocumentsResponse(BaseModel):
+    id: int
+    filename: str
+    size: int
+    upload_date: str
+    hits: int
+    last_used: str | None = None
 
 @router.post("/generate-api", response_model=GenApiResponse)
 async def generate_api(
@@ -332,7 +341,10 @@ async def add_document(
         # Create a single document entry with the complete text
         document = Documents(
             chunk_text=extracted_data,
-            api_id=api_entry.id
+            api_id=api_entry.id,
+            filename=file.filename,
+            size=file.file._file._size,
+            hits=0
         )
         db.add(document)
         db.commit()
@@ -455,5 +467,132 @@ async def regenerate_api_key(
             status_code=500,
             detail="Error regenerating the key, try again later"
         )
-    
 
+@router.get("/api-keys/{api_key}/documents", response_model=List[GetDocumentsResponse])    
+async def getAllDocumentsOfAPI(
+    api_key: str,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Session = Depends(get_db)
+):
+    """
+    Retrieve all documents associated with a specific API key.
+    
+    Args:
+        api_key (str): The API key to get documents for
+        current_user (User): The current authenticated user
+        db (Session): The database session
+        
+    Returns:
+        List[GetDocumentsResponse]: List of documents with their metadata
+        
+    Raises:
+        HTTPException: If API key not found or no documents exist
+    """
+    try:
+        # Validate API key ownership
+        api_entry = db.query(APIList).filter(
+            APIList.main_table_user_id == current_user.id,
+            APIList.api_key == api_key
+        ).first()
+        
+        if api_entry is None:
+            raise HTTPException(
+                status_code=404,
+                detail="API key not found"
+            )
+            
+        # Get all documents for this API key
+        documents = db.query(Documents).filter(
+            Documents.api_id == api_entry.id
+        ).all()
+        
+        if not documents:
+            raise HTTPException(
+                status_code=404,
+                detail="No documents found for this API key"
+            )
+
+        return [
+            GetDocumentsResponse(
+                id=d.document_id,
+                filename=d.filename,
+                size=d.size,
+                upload_date=str(d.created_at),
+                hits=d.hits,
+                last_used=str(d.last_used) if d.last_used else None
+            ) for d in documents
+        ]
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in getAllDocumentsOfAPI: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to retrieve documents"
+        )
+    
+@router.delete("/api-keys/{api_key}/documents/{document_id}")
+async def deleteDocumentFromAPI(
+    api_key: str,
+    document_id: int,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Session = Depends(get_db)
+):
+    """
+    Delete a specific document associated with an API key.
+    
+    Args:
+        api_key (str): The API key the document belongs to
+        document_id (int): The ID of the document to delete
+        current_user (User): The current authenticated user
+        db (Session): The database session
+        
+    Returns:
+        dict: Success status and message
+        
+    Raises:
+        HTTPException: If API key or document not found
+    """
+    try:
+        # Validate API key ownership
+        api_entry = db.query(APIList).filter(
+            APIList.main_table_user_id == current_user.id,
+            APIList.api_key == api_key
+        ).first()
+        
+        if api_entry is None:
+            raise HTTPException(
+                status_code=404,
+                detail="API key not found"
+            )
+            
+        # Validate document exists and belongs to the API key
+        document = db.query(Documents).filter(
+            Documents.document_id == document_id,
+            Documents.api_id == api_entry.id
+        ).first()
+        
+        if document is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Document not found or does not belong to this API key"
+            )
+            
+        # Delete the document
+        db.delete(document)
+        db.commit()
+        
+        return {
+            "success": True,
+            "message": "Document deleted successfully"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting document {document_id}: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to delete document"
+        )
