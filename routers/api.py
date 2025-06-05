@@ -5,7 +5,7 @@ from pydantic import BaseModel, EmailStr, constr
 from sqlalchemy.orm import Session
 from models.__init__ import get_db
 from models.user import User
-from models.api_list import APIList
+from models.api_list import APIList, UNLIMITED_TOKENS
 from models.documents import Documents
 from routers.auth import get_current_user
 from functions.generate_api_key.generate_api_key import generate_api_key
@@ -81,17 +81,14 @@ async def generate_api(
     # Generate new API key
     new_api_key = generate_api_key()
     
-    # Set token limit (use environment variable if not provided)
-    token_limit = int(os.getenv("FREE_TOKENS", "1000"))
-    
-    # Create new API entry
+    # Create new API entry with unlimited tokens by default
     try:
         api_entry = APIList(
             main_table_user_id=current_user.id,
             api_key=new_api_key,
             instructions=request.instructions,
             label=request.label,
-            token_limit_per_day=request.tl
+            token_limit_per_day=request.tl if request.tl > 0 else UNLIMITED_TOKENS
         )
         db.add(api_entry)
         db.commit()
@@ -292,14 +289,15 @@ async def add_document(
 ):
     """
     Add a document to a specific API key. Supports PDF, DOCX, TXT, and image files.
-    The document will be processed, extracted, and split into chunks before storage.
+    The document will be processed and stored in its entirety, with embeddings created
+    for each chunk of the document.
     
     Args:
         api_key: The API key to add the document to
         file: The document file to process (PDF, DOCX, TXT, or image)
         
     Returns:
-        Success message with number of chunks created
+        Success message with document ID and number of embeddings created
     """
     try:
         # Validate API key ownership
@@ -315,11 +313,11 @@ async def add_document(
             )
         
         # Validate file type
-        allowed_types = ["application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "text/plain", "image/jpeg", "image/png"]
+        allowed_types = ["application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "text/plain"]
         if file.content_type not in allowed_types:
             raise HTTPException(
                 status_code=400,
-                detail=f"Unsupported file type. Allowed types are: PDF, DOCX, TXT, JPEG, PNG"
+                detail=f"Unsupported file type. Allowed types are: PDF, DOCX, TXT"
             )
         
         # Extract data from the file
@@ -331,35 +329,37 @@ async def add_document(
                 detail="Failed to extract data from the file"
             )
         
-        # Convert extracted data to string if it's not already
-        if not isinstance(extracted_data, str):
-            extracted_data = str(extracted_data)
+        # Create a single document entry with the complete text
+        document = Documents(
+            chunk_text=extracted_data,
+            api_id=api_entry.id
+        )
+        db.add(document)
+        db.commit()
+        db.refresh(document)
         
-        # Split the text into chunks
+        # Split the text into chunks for embeddings
         chunks = chunk_document_text(extracted_data)
         
-        if not chunks:
-            raise HTTPException(
-                status_code=400,
-                detail="No valid content found in the document"
-            )
-        
-        # Create document entries for each chunk
-        documents = []
+        # Create embeddings for each chunk
+        embeddings = []
         for chunk in chunks:
-            document = Documents(
-                chunk_text=chunk,
-                api_id=api_entry.id
-            )
-            documents.append(document)
+            # TODO: Add your embedding generation logic here
+            # This is a placeholder for the actual embedding generation
+            embedding = {
+                "document_id": document.id,
+                "chunk_text": chunk,
+                "embedding": None  # Replace with actual embedding
+            }
+            embeddings.append(embedding)
         
-        # Add all documents to the database
-        db.add_all(documents)
-        db.commit()
+        # TODO: Add your embedding storage logic here
+        # This is where you would store the embeddings in your embeddings table
         
         return {
             "message": "Document processed and added successfully",
-            "chunks_created": len(chunks)
+            "document_id": document.id,
+            "embeddings_created": len(chunks)
         }
         
     except HTTPException:

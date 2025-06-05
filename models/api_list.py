@@ -16,6 +16,9 @@ from models.__init__ import Base
 
 load_dotenv()
 
+# Special value to represent unlimited tokens
+UNLIMITED_TOKENS = -1
+
 class APIList(Base):
     """
     API List model for managing document-specific API keys.
@@ -42,7 +45,7 @@ class APIList(Base):
     total_tokens = Column(Integer, default=os.getenv("FREE_TOKENS", 50000))
     tokens_used = Column(Integer, default=0)
     tokens_remaining = Column(Integer, default=os.getenv("FREE_TOKENS", 50000))
-    token_limit_per_day = Column(Integer)
+    token_limit_per_day = Column(Integer, default=UNLIMITED_TOKENS)
 
     user = relationship("User", back_populates="api_keys")
     documents = relationship("Documents", back_populates="api", cascade="all, delete-orphan")
@@ -54,6 +57,11 @@ class APIList(Base):
             kwargs['tokens_remaining'] = token_limit
             kwargs['total_tokens'] = token_limit
         super().__init__(**kwargs)
+
+    @property
+    def is_unlimited(self):
+        """Check if the API key has unlimited tokens."""
+        return self.token_limit_per_day == UNLIMITED_TOKENS
 
     @classmethod
     def get_by_api_key(cls, db: Session, api_key: str):
@@ -81,7 +89,7 @@ class APIList(Base):
             api_key: Unique API key string
             instructions: Optional processing instructions
             label: Optional label for the API key
-            token_limit: Optional token limit per day
+            token_limit: Optional token limit per day (None for unlimited)
 
         Returns:
             Newly created APIList object
@@ -91,7 +99,7 @@ class APIList(Base):
             label=label,
             api_key=api_key,
             instructions=instructions,
-            token_limit_per_day=token_limit or int(os.getenv("FREE_TOKENS", "1000"))
+            token_limit_per_day=token_limit if token_limit is not None else UNLIMITED_TOKENS
         )
         db.add(api_entry)
         db.commit()
