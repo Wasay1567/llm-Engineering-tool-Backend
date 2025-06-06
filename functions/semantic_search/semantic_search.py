@@ -1,9 +1,11 @@
 from sentence_transformers import SentenceTransformer, util
+from models.documents import Documents
+from sqlalchemy.orm import Session
 
 model = SentenceTransformer("clips/mfaq")
 
 
-def semantic_search(question: str, documents: list, top_k: int = 3):
+def semantic_search(question: str, documents: list, top_k: int = 3, db_session: Session = None):
     """
     Performs a semantic search for the given question against a list of documents.
     This function leverages a pre-trained model to encode the question and documents
@@ -17,6 +19,8 @@ def semantic_search(question: str, documents: list, top_k: int = 3):
     :type documents: list
     :param top_k: The number of top similar documents to retrieve. Defaults to 3.
     :type top_k: int
+    :param db_session: SQLAlchemy database session for updating document hits
+    :type db_session: Session
     :return: A list of the most semantically similar documents including document
         IDs, text chunks, and similarity scores.
     :rtype: list
@@ -33,10 +37,19 @@ def semantic_search(question: str, documents: list, top_k: int = 3):
     most_similar_documents = []
     for hit in similarities[0]:
         corpus_id = hit["corpus_id"]
+        score = hit["score"]
+        
+        # Only update hits for documents with good scores (e.g., > 0.7)
+        if score > 0.7 and db_session is not None:
+            document = db_session.query(Documents).filter_by(document_id=documents[corpus_id].document_id).first()
+            if document:
+                document.hits += 1
+                db_session.commit()
+        
         most_similar_documents.append({
             "document_id": documents[corpus_id].document_id,
             "chunk_text": documents[corpus_id].chunk_text,
-            "score": hit["score"]
+            "score": score
         })
 
     return most_similar_documents
